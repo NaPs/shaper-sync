@@ -3,6 +3,8 @@
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
-    "@semantic-release/github"
+    ["@semantic-release/github", {
+      "releaseBodyTemplate": "<%= nextRelease.notes %>\n\n---\n\n🐳 Docker image: `ghcr.io/naps/shaper-sync:<%= nextRelease.version %>`\n\n```bash\ndocker pull ghcr.io/naps/shaper-sync:<%= nextRelease.version %>\n```"
+    }]
   ]
 }
