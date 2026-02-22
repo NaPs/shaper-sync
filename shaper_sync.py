@@ -12,6 +12,7 @@ SHAPER_EMAIL and SHAPER_PASSWORD.
 """
 
 import argparse
+import fnmatch
 import logging
 import sys
 from collections import Counter
@@ -195,6 +196,24 @@ class ShaperHubClient:
             for f in self.list_files(remote_path, file_type="file")
         }
 
+    @staticmethod
+    def _file_matches(
+        name: str,
+        include: list[str] | None = None,
+        exclude: list[str] | None = None,
+    ) -> bool:
+        """Check if a filename matches include/exclude filters.
+
+        If include is set, the file must match at least one pattern.
+        If exclude is set, the file must not match any pattern.
+        Exclude takes precedence over include.
+        """
+        if exclude and any(fnmatch.fnmatch(name, p) for p in exclude):
+            return False
+        if include and not any(fnmatch.fnmatch(name, p) for p in include):
+            return False
+        return True
+
     def sync_directory(
         self,
         local_dir: Path,
@@ -202,6 +221,8 @@ class ShaperHubClient:
         *,
         dry_run: bool = False,
         recursive: bool = True,
+        include: list[str] | None = None,
+        exclude: list[str] | None = None,
     ) -> Counter:
         """Synchronize a local directory to Shaper Hub.
 
@@ -228,10 +249,16 @@ class ShaperHubClient:
                     f"{remote_path}{entry.name}/",
                     dry_run=dry_run,
                     recursive=True,
+                    include=include,
+                    exclude=exclude,
                 )
                 continue
 
             if not entry.is_file():
+                continue
+
+            if not self._file_matches(entry.name, include, exclude):
+                logger.debug("Filtered out: %s", entry.name)
                 continue
 
             local_mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
@@ -278,6 +305,8 @@ class ShaperHubClient:
         remote_path: str = "/",
         *,
         recursive: bool = True,
+        include: list[str] | None = None,
+        exclude: list[str] | None = None,
     ) -> None:
         """Watch a local directory for changes and sync them to Shaper Hub.
 
@@ -288,6 +317,7 @@ class ShaperHubClient:
         logger.info("Initial sync...")
         stats = self.sync_directory(
             local_dir, remote_path, recursive=recursive,
+            include=include, exclude=exclude,
         )
         logger.info(
             "Initial sync done: %d uploaded, %d updated, %d skipped, %d error(s).",
@@ -307,6 +337,9 @@ class ShaperHubClient:
                 _, type_names, watch_path, filename = event
 
                 if not filename or filename.startswith("."):
+                    continue
+
+                if not self._file_matches(filename, include, exclude):
                     continue
 
                 # Only react to file writes and moves
@@ -362,6 +395,14 @@ def main() -> None:
         help="Watch directory for changes and sync continuously.",
     )
     parser.add_argument(
+        "--include", action="append", default=["*.svg"],
+        help="Only sync files matching this pattern (default: *.svg). Can be repeated.",
+    )
+    parser.add_argument(
+        "--exclude", action="append", default=None,
+        help="Exclude files matching this pattern. Can be repeated.",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show more details."
     )
 
@@ -385,6 +426,8 @@ def main() -> None:
             args.directory,
             args.remote_path,
             recursive=not args.no_recursive,
+            include=args.include,
+            exclude=args.exclude,
         )
     else:
         stats = client.sync_directory(
@@ -392,6 +435,8 @@ def main() -> None:
             args.remote_path,
             dry_run=args.dry_run,
             recursive=not args.no_recursive,
+            include=args.include,
+            exclude=args.exclude,
         )
         logger.info("")
         logger.info(
