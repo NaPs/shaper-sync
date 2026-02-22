@@ -5,7 +5,7 @@ Synchronize a local directory to Shaper Hub (hub.shapertools.com).
 Usage:
     python shaper_sync.py <directory> [--email EMAIL] [--password PASSWORD]
                                       [--remote-path /remote/path]
-                                      [--dry-run] [--verbose]
+                                      [--dry-run] [--watch] [--verbose]
 
 Credentials can also be provided via the environment variables
 SHAPER_EMAIL and SHAPER_PASSWORD.
@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from os import environ
 from pathlib import Path
 
+import inotify.adapters
 import requests
 
 logger = logging.getLogger("shaper_sync")
@@ -141,6 +142,25 @@ class ShaperHubClient:
         self.create_file_entry(remote_path, entry.name, blob_id)
         return blob_id
 
+    def sync_file(self, local_file: Path, remote_path: str) -> None:
+        """Upload or update a single file on Shaper Hub.
+
+        Checks whether the file already exists remotely and either uploads
+        it as new or deletes + re-uploads if the local version is newer.
+        """
+        remote_path = remote_path.rstrip("/") + "/" if remote_path != "/" else "/"
+        self.ensure_remote_path(remote_path)
+        remote_files = self.get_remote_files(remote_path)
+
+        if local_file.name in remote_files:
+            logger.info("Updating: %s...", local_file.name)
+            self.delete_file(remote_path, local_file.name)
+        else:
+            logger.info("Uploading: %s...", local_file.name)
+
+        blob_id = self._upload_file(remote_path, local_file)
+        logger.info("OK: %s (blob: %s)", local_file.name, blob_id)
+
     def ensure_remote_path(self, remote_path: str) -> None:
         """Recursively create remote folders if they don't exist yet."""
         if remote_path == "/":
@@ -240,6 +260,65 @@ class ShaperHubClient:
         return stats
 
 
+    def watch_directory(
+        self,
+        local_dir: Path,
+        remote_path: str = "/",
+        *,
+        recursive: bool = True,
+    ) -> None:
+        """Watch a local directory for changes and sync them to Shaper Hub.
+
+        Performs an initial full sync, then uses inotify to watch for file
+        creation and modification events. Runs until interrupted with Ctrl+C.
+        """
+        # Initial sync
+        logger.info("Initial sync...")
+        stats = self.sync_directory(
+            local_dir, remote_path, recursive=recursive,
+        )
+        logger.info(
+            "Initial sync done: %d uploaded, %d updated, %d skipped, %d error(s).",
+            stats["uploaded"], stats["updated"], stats["skipped"], stats["errors"],
+        )
+
+        if recursive:
+            ino = inotify.adapters.InotifyTree(str(local_dir))
+        else:
+            ino = inotify.adapters.Inotify()
+            ino.add_watch(str(local_dir))
+
+        logger.info("Watching for changes... (Ctrl+C to stop)")
+
+        try:
+            for event in ino.event_gen(yield_nones=False):
+                _, type_names, watch_path, filename = event
+
+                if not filename or filename.startswith("."):
+                    continue
+
+                # Only react to file writes and moves
+                if not ({"IN_CLOSE_WRITE", "IN_MOVED_TO"} & set(type_names)):
+                    continue
+
+                full_path = Path(watch_path) / filename
+                if not full_path.is_file():
+                    continue
+
+                # Compute remote path from watched root
+                rel = full_path.parent.relative_to(local_dir)
+                rpath = remote_path.rstrip("/") + "/" if remote_path != "/" else "/"
+                if str(rel) != ".":
+                    rpath += str(rel) + "/"
+
+                try:
+                    self.sync_file(full_path, rpath)
+                except Exception as e:
+                    logger.error("ERROR for %s: %s", filename, e)
+        except KeyboardInterrupt:
+            logger.info("\nStopped.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Synchronize a local directory to Shaper Hub.",
@@ -267,6 +346,10 @@ def main() -> None:
         "--no-recursive", action="store_true", help="Do not synchronize subdirectories."
     )
     parser.add_argument(
+        "--watch", "-w", action="store_true",
+        help="Watch directory for changes and sync continuously.",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show more details."
     )
 
@@ -284,21 +367,28 @@ def main() -> None:
         logger.info("[Dry-run mode enabled -- no changes will be made]")
 
     client = ShaperHubClient(args.email, args.password)
-    stats = client.sync_directory(
-        args.directory,
-        args.remote_path,
-        dry_run=args.dry_run,
-        recursive=not args.no_recursive,
-    )
 
-    logger.info("")
-    logger.info(
-        "Done: %d uploaded, %d updated, %d skipped, %d error(s).",
-        stats["uploaded"],
-        stats["updated"],
-        stats["skipped"],
-        stats["errors"],
-    )
+    if args.watch:
+        client.watch_directory(
+            args.directory,
+            args.remote_path,
+            recursive=not args.no_recursive,
+        )
+    else:
+        stats = client.sync_directory(
+            args.directory,
+            args.remote_path,
+            dry_run=args.dry_run,
+            recursive=not args.no_recursive,
+        )
+        logger.info("")
+        logger.info(
+            "Done: %d uploaded, %d updated, %d skipped, %d error(s).",
+            stats["uploaded"],
+            stats["updated"],
+            stats["skipped"],
+            stats["errors"],
+        )
 
 
 if __name__ == "__main__":
