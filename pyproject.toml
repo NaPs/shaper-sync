@@ -3,6 +3,7 @@ name = "shaper-sync"
 version = "0.1.0"
 description = "Synchronize a local directory to Shaper Hub"
 requires-python = ">=3.12"
+license = "MIT"
 dependencies = [
     "inotify>=0.2.10",
     "requests>=2.28",
