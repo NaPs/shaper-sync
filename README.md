@@ -46,12 +46,6 @@ shaper-sync ./my-designs --verbose
 
 ## Docker
 
-Build the image:
-
-```bash
-docker build -t shaper-sync .
-```
-
 Run a one-shot sync:
 
 ```bash
@@ -59,7 +53,7 @@ docker run --rm \
   -e SHAPER_EMAIL=user@example.com \
   -e SHAPER_PASSWORD=secret \
   -v /path/to/designs:/data \
-  shaper-sync /data
+  ghcr.io/naps/shaper-sync /data
 ```
 
 Run in watch mode:
@@ -69,5 +63,5 @@ docker run --rm \
   -e SHAPER_EMAIL=user@example.com \
   -e SHAPER_PASSWORD=secret \
   -v /path/to/designs:/data \
-  shaper-sync /data --watch
+  ghcr.io/naps/shaper-sync /data --watch
 ```
