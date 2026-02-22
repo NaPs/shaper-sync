@@ -43,25 +43,37 @@ class ShaperHubClient:
     the Shaper Studio web app (studio.shapertools.com)."""
 
     def __init__(self, email: str, password: str):
+        self._email = email
+        self._password = password
         self.session = requests.Session()
         self.session.headers.update(COMMON_HEADERS)
-        self._authenticate(email, password)
+        self._authenticate()
 
     def _tree_url(self, path: str, name: str) -> str:
         """Build the URL for a file/folder entry in the userspace tree."""
         parent = path if path.endswith("/") else path + "/"
         return f"{API_URL}/files/userspace/tree/{parent}{name}"
 
-    def _authenticate(self, email: str, password: str) -> None:
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Send a request, re-authenticating once on 401."""
+        resp = self.session.request(method, url, **kwargs)
+        if resp.status_code == 401:
+            logger.info("Token expired, re-authenticating...")
+            self._authenticate()
+            resp = self.session.request(method, url, **kwargs)
+        return resp
+
+    def _authenticate(self) -> None:
         """Obtain a JWT via POST /token and set it as Bearer token."""
         logger.info("Authenticating...")
+        self.session.headers.pop("Authorization", None)
         resp = self.session.post(
             f"{AUTH_URL}/token",
             json={
                 "client_id": "000000000000000000000000",
                 "grant_type": "password",
-                "username": email,
-                "password": password,
+                "username": self._email,
+                "password": self._password,
                 "scope": "*",
                 "acceptTC": False,
             },
@@ -99,20 +111,20 @@ class ShaperHubClient:
         }
         if file_type:
             params["type"] = file_type
-        resp = self.session.get(f"{API_URL}/files/userspace/search", params=params)
+        resp = self._request("GET", f"{API_URL}/files/userspace/search", params=params)
         resp.raise_for_status()
         return resp.json().get("results", [])
 
     def create_folder(self, path: str, name: str) -> dict:
         """Create a folder in the user's personal space."""
-        resp = self.session.post(self._tree_url(path, name), json={"type": "folder"})
+        resp = self._request("POST", self._tree_url(path, name), json={"type": "folder"})
         resp.raise_for_status()
         return resp.json()
 
     def create_file_entry(self, path: str, name: str, blob_id: str) -> dict:
         """Create a file entry linked to a blob in the user's personal space."""
-        resp = self.session.post(
-            self._tree_url(path, name),
+        resp = self._request(
+            "POST", self._tree_url(path, name),
             json={"type": "file", "blobs": [blob_id]},
         )
         resp.raise_for_status()
@@ -120,14 +132,14 @@ class ShaperHubClient:
 
     def delete_file(self, path: str, name: str) -> None:
         """Delete a file entry from the user's personal space."""
-        resp = self.session.delete(self._tree_url(path, name))
+        resp = self._request("DELETE", self._tree_url(path, name))
         resp.raise_for_status()
 
     def upload_blob(self, file_path: Path) -> str:
         """Upload raw file bytes to blob storage and return the blob ID."""
         with open(file_path, "rb") as f:
-            resp = self.session.post(
-                f"{API_URL}/blobs/",
+            resp = self._request(
+                "POST", f"{API_URL}/blobs/",
                 data=f,
                 headers={"Content-Type": "application/octet-stream"},
             )
