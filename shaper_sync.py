@@ -412,6 +412,9 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
     )
 
+    if not args.remote_path.startswith("/"):
+        args.remote_path = "/" + args.remote_path
+
     if not args.directory.is_dir():
         logger.error("%s is not a directory.", args.directory)
         sys.exit(1)
